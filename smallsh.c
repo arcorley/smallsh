@@ -8,14 +8,29 @@
 #include <sys/stat.h>
 #include <sys/wait.h>
 
-void sigint_handler(int sig_no)
+int fg_only = 0;
+
+void sigtstp_handler(int signo)
 {
-	char* message = "terminated by signal 2\n";
-	write(STDOUT_FILENO, message, 23);
-	fflush(stdout);
-	exit(0);
+	int c;
+	if (fg_only == 0) //if we aren't in foreground mode
+	{
+		fg_only = 1; //set the flag 
+		char* message = "\nEntering foreground-only mode (& is now ignored) \n"; //display the message
+		write(STDOUT_FILENO, message, 51); //write it out to the screen
+		fflush(stdout);
+	}
+	else //do the opposite if we're already in foreground-mode
+	{
+		fg_only = 0;
+		char* message = "\nExiting foreground-only mode \n";
+		write(STDOUT_FILENO, message, 31);
+		fflush(stdout);
+
+	}
 }
 
+//this function replaces a substring in a larger string
 void substrReplace(char string[], char search[], char replace[])
 {
 	char buffer[100];
@@ -45,11 +60,17 @@ int main(){
 	int i;
 	int numArgs;
 	char expandLine[100], search[3] = "$$", process[100];
+	int c;
+	int charsEntered;
 
 	//handler for SIGINT signal. don't kill the shell if it's received
-	struct sigaction sigint_action = {0};
+	struct sigaction sigint_action = {0}, sigtstp_action = {0};
 	sigint_action.sa_handler = SIG_IGN; //ignore sigint signals in the parent process
+	sigtstp_action.sa_handler = &sigtstp_handler;
+	sigfillset(&sigtstp_action.sa_mask);
+	//sigtstp_action.sa_flags = SA_RESTART;
 	sigaction(SIGINT, &sigint_action, NULL);
+	sigaction(SIGTSTP, &sigtstp_action, NULL);
 
 	//loop for handling commands
 	while (!exited){
@@ -60,13 +81,15 @@ int main(){
 
 		//read in the user's input
 		ssize_t size = 0;
-		if(!(getline(&line, &size, stdin))) //get the input line unless this is a script and we're at the last line
-		{
-			return 0; //exit if this is the last line of the file
-		}
+		
+		charsEntered = getline(&line, &size, stdin);
+		if (charsEntered == -1)
+			clearerr(stdin);
+
 
 		//this section parses the input line into arguments
 		numArgs = 0;
+
 		token = strtok(line, " \n"); 
 
 		while (token != NULL)
@@ -90,8 +113,13 @@ int main(){
 			//this section handles running processes in the background
 			else if (strcmp(token, "&") == 0)
 			{
-				background = 1; //set background flag to 1
-				break; //exit the loop because this command can only come at the end
+				if (fg_only == 0) //if not in foreground only mode, set the background flag to 1
+				{
+					background = 1; //set background flag to 1
+					break; //exit the loop because this command can only come at the end
+				}
+
+				break;
 			}
 			//this section handles any other command or argument
 			else
@@ -164,7 +192,7 @@ int main(){
 				//if this is a foreground process
 				if (!background)
 				{
-					sigint_action.sa_handler = &sigint_handler;
+					sigint_action.sa_handler = SIG_DFL; //set the handler to default so child processes can be killed
 					sigaction(SIGINT, &sigint_action, NULL);
 				}
 				//check for input redirection
@@ -259,14 +287,9 @@ int main(){
 						waitpid(pid, &status, 0);
 					} while(!WIFEXITED(status) && !WIFSIGNALED(status));
 
-					if (WIFEXITED(status))
+					if (WIFSIGNALED(status))
 					{
-						printf("Testing exit status\n");
-						fflush(stdout);
-					}
-					else if (WIFSIGNALED(status))
-					{
-						printf("Testing signal exit\n");
+						printf("terminated by signal %d\n", status);
 						fflush(stdout);
 					}
 				}
